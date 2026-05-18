@@ -7,36 +7,43 @@ from dotenv import load_dotenv
 from messages import dump_debug, extract_text, normalize_messages
 from todoManager import TodoManager
 from tools import TOOLS, build_tool_handlers
+from skill import SkillRegistry
+from pathlib import Path
 
 load_dotenv()
+
+from tools import WORKDIR 
 
 # ── Client & model ───────────────────────────────────────────────────────────
 
 client = Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
 MODEL = os.getenv("MODEL")
-
-# ── Prompts ──────────────────────────────────────────────────────────────────
-
-from tools import WORKDIR  # imported here so the prompt reflects the resolved path
-
-SYSTEM = (
-    f"You are a AI agent at {WORKDIR}. "
-    "Use the todo tool for multi-step work. "
-    "Keep exactly one step in_progress when a task has multiple steps. "
-    "Refresh the plan as work advances. Prefer tools over prose."
-)
-SUBAGENT_SYSTEM = (
-    f"You are a coding subagent at {WORKDIR}. "
-    "Complete the given task, then summarize your findings."
-)
+SKILLS_DIR = Path.cwd() / "skills"
 
 # ── State ────────────────────────────────────────────────────────────────────
 
 TODO = TodoManager()
+SKILL_REGISTRY = SkillRegistry(SKILLS_DIR)
 
 # The lambda lets us reference run_subagent before it's defined — standard
 # Python forward-reference pattern; the lambda is only called at runtime.
-TOOL_HANDLERS = build_tool_handlers(TODO, lambda prompt: run_subagent(prompt))
+TOOL_HANDLERS = build_tool_handlers(TODO, SKILL_REGISTRY, lambda prompt: run_subagent(prompt))
+
+# ── Prompts ──────────────────────────────────────────────────────────────────
+
+SYSTEM = (
+    f"You are an autonomous coding agent working in {WORKDIR}. "
+    "For multi-step tasks, call todo first and keep exactly one item in_progress. "
+    "Prefer edit over write for small changes. Read before you write. "
+    "Verify work with bash or read after edits. Prefer tools over prose."
+    "Use load_skill when a task needs specialized instructions before you act."
+    "Skills available:"
+    f"{SKILL_REGISTRY.describe_available()}"
+)
+SUBAGENT_SYSTEM = (
+    f"You are a coding subagent working in {WORKDIR}. "
+    "Complete the delegated task, verify your work, then return a concise summary."
+)
 
 # ── LoopState ────────────────────────────────────────────────────────────────
 

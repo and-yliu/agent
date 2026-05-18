@@ -121,6 +121,15 @@ TOOLS = [
             "required": ["prompt"],
         },
     },
+    {
+        "name": "load_skill",
+        "description": "Load the full body of a named skill into the current context.",
+        "input_schema": {
+            "type": "object",
+            "properties": {"name": {"type": "string"}},
+            "required": ["name"],
+        },
+    },
 ]
 
 # ── Path sandbox ─────────────────────────────────────────────────────────────
@@ -195,7 +204,7 @@ def run_edit(path: str, old_text: str, new_text: str) -> str:
 
 # ── Handler factory ───────────────────────────────────────────────────────────
 
-def build_tool_handlers(todo, run_subagent_fn: callable) -> dict:
+def build_tool_handlers(todo, skill_registry, run_subagent_fn: callable) -> dict:
     """
     Build the TOOL_HANDLERS dispatch dict.
 
@@ -209,4 +218,5 @@ def build_tool_handlers(todo, run_subagent_fn: callable) -> dict:
         "edit":  lambda **kwargs: run_edit(kwargs["path"], kwargs["old_text"], kwargs["new_text"]),
         "todo":  lambda **kwargs: todo.update(kwargs["items"]),
         "task":  lambda **kwargs: run_subagent_fn(kwargs["prompt"]),
+        "load_skill": lambda **kwargs: skill_registry.load_skill(kwargs["name"]),
     }
