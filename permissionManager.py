@@ -1,17 +1,18 @@
 import re
+from typing import Literal
 import json
 from dataclasses import dataclass, field
 from fnmatch import fnmatch
 
 MODES = ("default", "plan", "auto")
-READ_ONLY_TOOLS = {"read_file", "bash_readonly"}
-WRITE_TOOLS = {"write_file", "edit_file", "bash"}
+READ_ONLY_TOOLS = {"read_file", "bash_readonly", "task", "todo", "load_skill"}
+WRITE_TOOLS = {"write_file", "edit_file"}
 
 
 @dataclass
 class PermissionRule:
     tool: str
-    behavior: "allow" | "deny" | "ask",
+    behavior: Literal["allow", "deny", "ask"]
     path: str | None
     content: str | None
 
@@ -59,7 +60,11 @@ class PermissionManager:
             raise ValueError(f"Unknown mode: {mode}. Choose from {MODES}")
 
         self.mode = mode
-        self.rules = rules or []
+        self.rules = [
+            *(rules or []),
+            PermissionRule(tool="load_skill", behavior="allow", path=None, content=None),
+            PermissionRule(tool="todo", behavior="allow", path=None, content=None),
+        ]
 
     def check(self, tool_name: str, tool_input: dict) -> dict:
         """
@@ -101,18 +106,19 @@ class PermissionManager:
             return {"behavior": "allow", "reason": "Plan mode: read-only allowed"}
 
         if self.mode == "auto":
-            # Auto mode: auto-allow read-only tools, ask for writes
-            if tool_name in READ_ONLY_TOOLS or tool_name == "read_file":
-                return {
-                    "behavior": "allow",
-                    "reason": "Auto mode: read-only tool auto-approved"
-                }
+            # Auto mode: approve all tools without asking (bash already filtered above)
+            return {"behavior": "allow", "reason": "Auto mode: tool auto-approved"}
+
+        if tool_name in READ_ONLY_TOOLS:
+            return {
+                "behavior": "allow",
+                "reason": "Auto mode: read-only tool auto-approved"
+            }
 
         for rule in self.rules:
             if rule.behavior != "allow":
                 continue
             if self._match(rule, tool_name, tool_input):
-                self.consecutive_denials = 0
                 return {
                     "behavior": "allow",
                     "reason": f"Matched allow rule: {rule}"

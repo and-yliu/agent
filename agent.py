@@ -9,6 +9,7 @@ from todoManager import TodoManager
 from tools import TOOLS, build_tool_handlers
 from skill import SkillRegistry
 from pathlib import Path
+from permissionManager import PermissionManager
 
 load_dotenv()
 
@@ -58,7 +59,7 @@ class LoopState:
 # ── Tool dispatch ─────────────────────────────────────────────────────────────
 
 
-def execute_tool_calls(response_content) -> list[dict]:
+def execute_tool_calls(response_content, perms: PermissionManager | None = None) -> list[dict]:
     results = []
     used_todo = False
 
@@ -66,28 +67,52 @@ def execute_tool_calls(response_content) -> list[dict]:
         if block.type != "tool_use":
             continue
 
-        handler = TOOL_HANDLERS.get(block.name)
-        try:
-            output = handler(**block.input) if handler else f"Unknown tool: {block.name}"
-        except Exception as exc:
-            output = f"Error: {exc}"
-
-        if block.name == "task":
-            desc = block.input.get("description", "subtask")
-            prompt = block.input.get("prompt", "")
-            print(f"> task ({desc}): {prompt[:80]}")
+        decision = perms.check(block.name, block.input or {})
+        if decision["behavior"] == "deny":
+            output = f"Permission denied: {decision['reason']}"
+            print(f"  [DENIED] {block.name}: {decision['reason']}")
+            results.append({
+                "type": "tool_result",
+                "tool_use_id": block.id,
+                "content": output,
+            })
+        elif decision["behavior"] == "ask":
+            if perms.ask_user(block.name, block.input or {}):
+                handler = TOOL_HANDLERS.get(block.name)
+                output = handler(**(block.input or {})) if handler else f"Unknown: {block.name}"
+                print(f"> {block.name}: {str(output)[:200]}")
+                if block.name == "todo":
+                    used_todo = True
+            else:
+                output = f"Permission denied by user for {block.name}"
+                print(f"  [USER DENIED] {block.name}")
+            results.append({
+                "type": "tool_result",
+                "tool_use_id": block.id,
+                "content": output,
+            })
         else:
-            print(f"> {block.name}:")
-            print(output[:1000])
+            handler = TOOL_HANDLERS.get(block.name)
+            try:
+                output = handler(**block.input) if handler else f"Unknown tool: {block.name}"
+            except Exception as exc:
+                output = f"Error: {exc}"
 
-        results.append({
-            "type": "tool_result",
-            "tool_use_id": block.id,
-            "content": output,
-        })
+            if block.name == "task":
+                prompt = block.input.get("prompt", "")
+                print(f"> task: {prompt[:80]}")
+            else:
+                print(f"> {block.name}:")
+                print(output[:1000])
 
-        if block.name == "todo":
-            used_todo = True
+            results.append({
+                "type": "tool_result",
+                "tool_use_id": block.id,
+                "content": output,
+            })
+
+            if block.name == "todo":
+                used_todo = True
 
     if used_todo:
         TODO.state.rounds_since_update = 0
@@ -104,6 +129,8 @@ def execute_tool_calls(response_content) -> list[dict]:
 
 
 def run_subagent(prompt: str) -> str:
+    from permissionManager import PermissionManager as PM
+    subagent_perms = PM(mode="auto", rules=[])
     subagent_tools = [t for t in TOOLS if t["name"] not in {"todo", "task"}]
     sub_messages = [{"role": "user", "content": prompt}]
 
@@ -120,7 +147,7 @@ def run_subagent(prompt: str) -> str:
         if response.stop_reason != "tool_use":
             return extract_text(response.content) or "(no summary)"
 
-        results = execute_tool_calls(response.content)
+        results = execute_tool_calls(response.content, subagent_perms)
         sub_messages.append({"role": "user", "content": results})
 
     return (
@@ -132,33 +159,27 @@ def run_subagent(prompt: str) -> str:
 # ── Agent loop ────────────────────────────────────────────────────────────────
 
 
-def run_loop(state: LoopState) -> bool:
+def agent_loop(state: LoopState, perms: PermissionManager) -> None:
     dump_debug(state)
-    response = client.messages.create(
-        model=MODEL,
-        tools=TOOLS,
-        system=SYSTEM,
-        max_tokens=8000,
-        messages=normalize_messages(state.messages),
-    )
-    state.messages.append({"role": "assistant", "content": response.content})
+    while True:
+        response = client.messages.create(
+            model=MODEL,
+            tools=TOOLS,
+            system=SYSTEM,
+            max_tokens=8000,
+            messages=normalize_messages(state.messages),
+        )
+        state.messages.append({"role": "assistant", "content": response.content})
 
-    if response.stop_reason != "tool_use":
-        state.transition_reason = None
-        return False
+        if response.stop_reason != "tool_use":
+            state.transition_reason = None
+            return
 
-    results = execute_tool_calls(response.content)
-    if not results:
-        state.transition_reason = None
-        return False
+        results = execute_tool_calls(response.content, perms)
+        if not results:
+            state.transition_reason = None
+            return
 
-    state.messages.append({"role": "user", "content": results})
-    state.turn_count += 1
-    state.transition_reason = "tool_result"
-    return True
-
-
-def agent_loop(state: LoopState) -> None:
-    dump_debug(state)
-    while run_loop(state):
-        dump_debug(state)
+        state.messages.append({"role": "user", "content": results})
+        state.turn_count += 1
+        state.transition_reason = "tool_result"

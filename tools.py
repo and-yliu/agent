@@ -146,10 +146,6 @@ def safe_path(p: str) -> Path:
 
 def run_bash(command: str) -> str:
     print(f"\033[33m$ {command}\033[0m")
-    dangerous = ["rm -rf /", "sudo", "shutdown", "reboot", "> /dev/"]
-    if any(d in command for d in dangerous):
-        return "Error: Dangerous command blocked."
-
     try:
         result = subprocess.run(
             command,
@@ -195,7 +191,13 @@ def run_edit(path: str, old_text: str, new_text: str) -> str:
         content = fp.read_text()
         if old_text not in content:
             return f"Error: Text not found in {path}"
-        content = content.replace(old_text, new_text)
+        count = content.count(old_text)
+        if count > 1:
+            return (
+                f"Error: Found {count} occurrences of the target text in {path}. "
+                "Provide a more specific old_text to uniquely identify the edit location."
+            )
+        content = content.replace(old_text, new_text, 1)
         fp.write_text(content)
         return f"Edited {path}"
     except Exception as e:

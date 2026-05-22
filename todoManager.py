@@ -8,7 +8,7 @@ class PlanItem:
 
 @dataclass
 class PlanningState:
-    items: list[PlanItem] = field(default_factory=list),
+    items: list[PlanItem] = field(default_factory=list)
     rounds_since_update: int = 0
 
 PLAN_REMINDER_INTERVAL = 3
