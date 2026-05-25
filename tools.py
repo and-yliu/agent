@@ -130,6 +130,17 @@ TOOLS = [
             "required": ["name"],
         },
     },
+    {
+        "name": "glob", 
+        "description": "Find files matching a glob pattern.",
+        "input_schema": {
+            "type": "object", 
+            "properties": {
+                "pattern": {"type": "string"}
+            }, 
+            "required": ["pattern"]
+        }
+    }
 ]
 
 # ── Path sandbox ─────────────────────────────────────────────────────────────
@@ -150,7 +161,7 @@ def run_bash(command: str) -> str:
         result = subprocess.run(
             command,
             shell=True,
-            cwd=os.getcwd(),
+            cwd=WORKDIR,
             capture_output=True,
             text=True,
             timeout=120,
@@ -203,6 +214,17 @@ def run_edit(path: str, old_text: str, new_text: str) -> str:
     except Exception as e:
         return f"Error: {e}"
 
+def run_glob(pattern: str) -> str:
+    import glob as g
+    try:
+        results = []
+        for match in g.glob(pattern, root_dir=WORKDIR, recursive=True):
+            if (WORKDIR / match).resolve().is_relative_to(WORKDIR):
+                results.append(match)
+        return "\n".join(results) if results else "(no matches)"
+    except Exception as e:
+        return f"Error: {e}"
+
 
 # ── Handler factory ───────────────────────────────────────────────────────────
 
@@ -221,4 +243,5 @@ def build_tool_handlers(todo, skill_registry, run_subagent_fn: callable) -> dict
         "todo":  lambda **kwargs: todo.update(kwargs["items"]),
         "task":  lambda **kwargs: run_subagent_fn(kwargs["prompt"]),
         "load_skill": lambda **kwargs: skill_registry.load_skill(kwargs["name"]),
+        "glob": lambda **kwargs: run_glob(kwargs["pattern"]),
     }

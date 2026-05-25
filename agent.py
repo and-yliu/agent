@@ -9,7 +9,7 @@ from todoManager import TodoManager
 from tools import TOOLS, build_tool_handlers
 from skill import SkillRegistry
 from pathlib import Path
-from permissionManager import PermissionManager
+from hooks import trigger_hooks
 
 load_dotenv()
 
@@ -18,6 +18,7 @@ from tools import WORKDIR
 # ── Client & model ───────────────────────────────────────────────────────────
 
 client = Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+
 MODEL = os.getenv("MODEL")
 SKILLS_DIR = Path.cwd() / "skills"
 
@@ -59,7 +60,7 @@ class LoopState:
 # ── Tool dispatch ─────────────────────────────────────────────────────────────
 
 
-def execute_tool_calls(response_content, perms: PermissionManager | None = None) -> list[dict]:
+def execute_tool_calls(response_content) -> list[dict]:
     results = []
     used_todo = False
 
@@ -67,52 +68,41 @@ def execute_tool_calls(response_content, perms: PermissionManager | None = None)
         if block.type != "tool_use":
             continue
 
-        decision = perms.check(block.name, block.input or {})
-        if decision["behavior"] == "deny":
-            output = f"Permission denied: {decision['reason']}"
-            print(f"  [DENIED] {block.name}: {decision['reason']}")
+        # Trigger PreToolUse hooks (handles permissions and logging)
+        blocked_reason = trigger_hooks("PreToolUse", block)
+        if blocked_reason is not None:
+            output = f"Permission denied: {blocked_reason}"
             results.append({
                 "type": "tool_result",
                 "tool_use_id": block.id,
                 "content": output,
             })
-        elif decision["behavior"] == "ask":
-            if perms.ask_user(block.name, block.input or {}):
-                handler = TOOL_HANDLERS.get(block.name)
-                output = handler(**(block.input or {})) if handler else f"Unknown: {block.name}"
-                print(f"> {block.name}: {str(output)[:200]}")
-                if block.name == "todo":
-                    used_todo = True
-            else:
-                output = f"Permission denied by user for {block.name}"
-                print(f"  [USER DENIED] {block.name}")
-            results.append({
-                "type": "tool_result",
-                "tool_use_id": block.id,
-                "content": output,
-            })
+            continue
+
+        handler = TOOL_HANDLERS.get(block.name)
+        try:
+            output = handler(**block.input) if handler else f"Unknown tool: {block.name}"
+        except Exception as exc:
+            output = f"Error: {exc}"
+
+        if block.name == "task":
+            prompt = block.input.get("prompt", "")
+            print(f"> task: {prompt[:80]}")
         else:
-            handler = TOOL_HANDLERS.get(block.name)
-            try:
-                output = handler(**block.input) if handler else f"Unknown tool: {block.name}"
-            except Exception as exc:
-                output = f"Error: {exc}"
+            print(f"> {block.name}:")
+            print(str(output)[:1000])
 
-            if block.name == "task":
-                prompt = block.input.get("prompt", "")
-                print(f"> task: {prompt[:80]}")
-            else:
-                print(f"> {block.name}:")
-                print(output[:1000])
+        results.append({
+            "type": "tool_result",
+            "tool_use_id": block.id,
+            "content": output,
+        })
 
-            results.append({
-                "type": "tool_result",
-                "tool_use_id": block.id,
-                "content": output,
-            })
+        if block.name == "todo":
+            used_todo = True
 
-            if block.name == "todo":
-                used_todo = True
+        # Trigger PostToolUse hooks
+        trigger_hooks("PostToolUse", block, output)
 
     if used_todo:
         TODO.state.rounds_since_update = 0
@@ -129,8 +119,6 @@ def execute_tool_calls(response_content, perms: PermissionManager | None = None)
 
 
 def run_subagent(prompt: str) -> str:
-    from permissionManager import PermissionManager as PM
-    subagent_perms = PM(mode="auto", rules=[])
     subagent_tools = [t for t in TOOLS if t["name"] not in {"todo", "task"}]
     sub_messages = [{"role": "user", "content": prompt}]
 
@@ -147,7 +135,7 @@ def run_subagent(prompt: str) -> str:
         if response.stop_reason != "tool_use":
             return extract_text(response.content) or "(no summary)"
 
-        results = execute_tool_calls(response.content, subagent_perms)
+        results = execute_tool_calls(response.content)
         sub_messages.append({"role": "user", "content": results})
 
     return (
@@ -159,7 +147,7 @@ def run_subagent(prompt: str) -> str:
 # ── Agent loop ────────────────────────────────────────────────────────────────
 
 
-def agent_loop(state: LoopState, perms: PermissionManager) -> None:
+def agent_loop(state: LoopState) -> None:
     dump_debug(state)
     while True:
         response = client.messages.create(
@@ -173,11 +161,13 @@ def agent_loop(state: LoopState, perms: PermissionManager) -> None:
 
         if response.stop_reason != "tool_use":
             state.transition_reason = None
+            trigger_hooks("Stop", state.messages)
             return
 
-        results = execute_tool_calls(response.content, perms)
+        results = execute_tool_calls(response.content)
         if not results:
             state.transition_reason = None
+            trigger_hooks("Stop", state.messages)
             return
 
         state.messages.append({"role": "user", "content": results})
