@@ -10,6 +10,7 @@ from tools import TOOLS, build_tool_handlers
 from skill import SkillRegistry
 from pathlib import Path
 from hooks import trigger_hooks
+from context import AgentContext
 
 load_dotenv()
 
@@ -80,17 +81,21 @@ def execute_tool_calls(response_content) -> list[dict]:
             continue
 
         handler = TOOL_HANDLERS.get(block.name)
+        if block.name == "task":
+            prompt = block.input.get("prompt", "")
+            print(f"{AgentContext.get_prefix()}> task: {prompt}")
+        
         try:
             output = handler(**block.input) if handler else f"Unknown tool: {block.name}"
         except Exception as exc:
             output = f"Error: {exc}"
 
-        if block.name == "task":
-            prompt = block.input.get("prompt", "")
-            print(f"> task: {prompt[:80]}")
-        else:
-            print(f"> {block.name}:")
-            print(str(output)[:1000])
+        if block.name != "task":
+            print(f"{AgentContext.get_prefix()}> {block.name}:")
+            indent = AgentContext.get_indent()
+            output_str = str(output)[:1000]
+            for line in output_str.splitlines():
+                print(f"{indent}{line}")
 
         results.append({
             "type": "tool_result",
@@ -119,29 +124,33 @@ def execute_tool_calls(response_content) -> list[dict]:
 
 
 def run_subagent(prompt: str) -> str:
-    subagent_tools = [t for t in TOOLS if t["name"] not in {"todo", "task"}]
-    sub_messages = [{"role": "user", "content": prompt}]
+    AgentContext.push("subagent")
+    try:
+        subagent_tools = [t for t in TOOLS if t["name"] not in {"todo", "task"}]
+        sub_messages = [{"role": "user", "content": prompt}]
 
-    for _ in range(30):
-        response = client.messages.create(
-            model=MODEL,
-            system=SUBAGENT_SYSTEM,
-            messages=normalize_messages(sub_messages),
-            tools=subagent_tools,
-            max_tokens=8000,
+        for _ in range(30):
+            response = client.messages.create(
+                model=MODEL,
+                system=SUBAGENT_SYSTEM,
+                messages=normalize_messages(sub_messages),
+                tools=subagent_tools,
+                max_tokens=8000,
+            )
+            sub_messages.append({"role": "assistant", "content": response.content})
+
+            if response.stop_reason != "tool_use":
+                return extract_text(response.content) or "(no summary)"
+
+            results = execute_tool_calls(response.content)
+            sub_messages.append({"role": "user", "content": results})
+
+        return (
+            extract_text(response.content)
+            + "\n(Warning: subagent stopped after reaching 30 turn limit)"
         )
-        sub_messages.append({"role": "assistant", "content": response.content})
-
-        if response.stop_reason != "tool_use":
-            return extract_text(response.content) or "(no summary)"
-
-        results = execute_tool_calls(response.content)
-        sub_messages.append({"role": "user", "content": results})
-
-    return (
-        extract_text(response.content)
-        + "\n(Warning: subagent stopped after reaching 30 turn limit)"
-    )
+    finally:
+        AgentContext.pop()
 
 
 # ── Agent loop ────────────────────────────────────────────────────────────────

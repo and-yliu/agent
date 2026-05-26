@@ -1,6 +1,7 @@
 import os
 import subprocess
 from pathlib import Path
+from context import AgentContext
 
 from dotenv import load_dotenv
 
@@ -156,7 +157,7 @@ def safe_path(p: str) -> Path:
 # ── Tool implementations ─────────────────────────────────────────────────────
 
 def run_bash(command: str) -> str:
-    print(f"\033[33m$ {command}\033[0m")
+    print(f"{AgentContext.get_indent()}\033[33m$ {command}\033[0m")
     try:
         result = subprocess.run(
             command,
