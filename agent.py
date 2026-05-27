@@ -39,9 +39,8 @@ SYSTEM = (
     "For multi-step tasks, call todo first and keep exactly one item in_progress. "
     "Prefer edit over write for small changes. Read before you write. "
     "Verify work with bash or read after edits. Prefer tools over prose."
+    f"Skills available: {SKILL_REGISTRY.describe_available()}"
     "Use load_skill when a task needs specialized instructions before you act."
-    "Skills available:"
-    f"{SKILL_REGISTRY.describe_available()}"
 )
 SUBAGENT_SYSTEM = (
     f"You are a coding subagent working in {WORKDIR}. "
