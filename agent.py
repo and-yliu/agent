@@ -22,6 +22,8 @@ client = Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
 
 MODEL = os.getenv("MODEL")
 SKILLS_DIR = Path.cwd() / "skills"
+TRANSCRIPT_DIR = WORKDIR / ".transcripts"
+TOOL_RESULTS_DIR = WORKDIR / ".task_outputs" / "tool-results"
 
 # ── State ────────────────────────────────────────────────────────────────────
 

@@ -1,6 +1,9 @@
+
+
 CONTEXT_LIMIT = 50000
 KEEP_RECENT = 3
-PERSIST_THRESHOLD = 30000
+TOOL_RESULT_LIMIT = 30000
+PERSIST_THRESHOLD = 200000
 
 def estimate_size(messages):
     return len(str(messages))
@@ -31,4 +34,66 @@ def micro_compact(messages):
         if len(block.get("content", "")) > 120:
             block["content"] = "[Earlier tool result compacted. Re-run if needed.]"
     return messages
-            
+
+def persist_large_output(tool_use_id, output, tool_results_dir):
+    tool_results_dir.mkdir(parents=True, exist_ok=True)
+    path = tool_results_dir / f"{tool_use_id}.txt"
+    if not path.exists():
+        path.write_text(output, encoding="utf-8")
+    return f"<persisted-output>\nFull output: {path}\nPreview:\n{output[:2000]}\n</persisted-output>"
+
+def tool_result_budget(messages, max_budget = PERSIST_THRESHOLD, tool_results_dir):
+    last = messages[-1] if messages else None
+    if not last or last.get("role") != "user" or not isinstance(last.get("content"), list): 
+        return messages
+    blocks = [(i, b) for i, b in enumerate(last["content"]) if isinstance(b, dict) and b.get("type") == "tool_result"]
+    total = sum(len(str(b.get("content", ""))) for _, b in blocks)
+    if total <= max_budget: 
+        return messages
+
+    ranked = sorted(blocks, key=lambda p: len(str(p[1].get("content", ""))), reverse=True)
+    for _, block in ranked:
+        if total <= max_budget: break
+        content = str(block.get("content", ""))
+        if len(content) <= TOOL_RESULT_LIMIT: 
+            continue
+        tid = block.get("tool_use_id", "unknown")
+        block["content"] = persist_large_output(tid, content, tool_results_dir)
+        total = sum(len(str(b.get("content", ""))) for _, b in blocks)
+
+    return messages
+
+    
+def write_transcript(messages, transcript_dir):
+    transcript_dir.mkdir(parents=True, exist_ok=True)
+    path = transcript_dir / f"transcript_{int(time.time())}.jsonl"
+    with path.open("w") as f:
+        for msg in messages: 
+            f.write(json.dumps(msg, default=str) + "\n")
+    return path
+
+def summarize_history(messages):
+    conversation = json.dumps(messages, default=str)[:80000]
+    prompt = """Summarize this agent conversation so work can continue.\n
+              Preserve: 
+              1. current goal, 
+              2. key findings/decisions, 
+              3. files read/changed, 
+              4. remaining work, 
+              5. user constraints.\nBe compact but concrete.\n\n""" + conversation
+    response = client.messages.create(model=MODEL, messages=[{"role": "user", "content": prompt}], max_tokens=2000)
+    return "\n".join(
+        getattr(block, "text", "")
+        for block in response.content
+        if getattr(block, "type", None) == "text").strip() or "(empty summary)"
+
+def compact_history(messages, transcript_dir):
+    transcript_path = write_transcript(messages, transcript_dir)
+    print(f"[transcript saved: {transcript_path}]")
+    summary = summarize_history(messages)
+    return [{"role": "user", "content": f"[Compacted]\n\n{summary}"}]
+
+def reactive_compact(messages, transcript_dir):
+    transcript = write_transcript(messages)
+    summary = summarize_history(messages)
+    return [{"role": "user", "content": f"[Reactive compact]\n\n{summary}"}, *messages[-5:]]
