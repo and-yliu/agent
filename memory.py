@@ -1,4 +1,18 @@
+import json
+import time
 
+from pathlib import Path
+from anthropic import Anthropic
+from tools import WORKDIR
+from dotenv import load_dotenv
+
+load_dotenv()
+
+client = Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
+MODEL = os.getenv("MODEL")
+
+TRANSCRIPT_DIR = Path.cwd() / ".transcripts"
+TOOL_RESULTS_DIR = Path.cwd() / ".task_outputs" / "tool-results"
 
 CONTEXT_LIMIT = 50000
 KEEP_RECENT = 3
@@ -35,14 +49,14 @@ def micro_compact(messages):
             block["content"] = "[Earlier tool result compacted. Re-run if needed.]"
     return messages
 
-def persist_large_output(tool_use_id, output, tool_results_dir):
-    tool_results_dir.mkdir(parents=True, exist_ok=True)
-    path = tool_results_dir / f"{tool_use_id}.txt"
+def persist_large_output(tool_use_id, output):
+    TOOL_RESULTS_DIR.mkdir(parents=True, exist_ok=True)
+    path = TOOL_RESULTS_DIR / f"{tool_use_id}.txt"
     if not path.exists():
         path.write_text(output, encoding="utf-8")
     return f"<persisted-output>\nFull output: {path}\nPreview:\n{output[:2000]}\n</persisted-output>"
 
-def tool_result_budget(messages, max_budget = PERSIST_THRESHOLD, tool_results_dir):
+def tool_result_budget(messages, max_budget = PERSIST_THRESHOLD):
     last = messages[-1] if messages else None
     if not last or last.get("role") != "user" or not isinstance(last.get("content"), list): 
         return messages
@@ -58,15 +72,15 @@ def tool_result_budget(messages, max_budget = PERSIST_THRESHOLD, tool_results_di
         if len(content) <= TOOL_RESULT_LIMIT: 
             continue
         tid = block.get("tool_use_id", "unknown")
-        block["content"] = persist_large_output(tid, content, tool_results_dir)
+        block["content"] = persist_large_output(tid, content)
         total = sum(len(str(b.get("content", ""))) for _, b in blocks)
 
     return messages
 
     
-def write_transcript(messages, transcript_dir):
-    transcript_dir.mkdir(parents=True, exist_ok=True)
-    path = transcript_dir / f"transcript_{int(time.time())}.jsonl"
+def write_transcript(messages):
+    TRANSCRIPT_DIR.mkdir(parents=True, exist_ok=True)
+    path = TRANSCRIPT_DIR / f"transcript_{int(time.time())}.jsonl"
     with path.open("w") as f:
         for msg in messages: 
             f.write(json.dumps(msg, default=str) + "\n")
@@ -87,13 +101,13 @@ def summarize_history(messages):
         for block in response.content
         if getattr(block, "type", None) == "text").strip() or "(empty summary)"
 
-def compact_history(messages, transcript_dir):
-    transcript_path = write_transcript(messages, transcript_dir)
+def compact_history(messages):
+    transcript_path = write_transcript(messages)
     print(f"[transcript saved: {transcript_path}]")
     summary = summarize_history(messages)
     return [{"role": "user", "content": f"[Compacted]\n\n{summary}"}]
 
-def reactive_compact(messages, transcript_dir):
+def reactive_compact(messages):
     transcript = write_transcript(messages)
     summary = summarize_history(messages)
     return [{"role": "user", "content": f"[Reactive compact]\n\n{summary}"}, *messages[-5:]]

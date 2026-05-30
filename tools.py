@@ -141,6 +141,19 @@ TOOLS = [
             }, 
             "required": ["pattern"]
         }
+    },
+    {
+        "name": "compact",
+        "description": "Compact long conversation history into a summary to save tokens.",
+        "input_schema": {
+            "type": "object", 
+            "properties": {
+                "focus": {
+                    "type": "string",
+                    "description": "Optional focus to preserve important details"
+                }
+            }
+        }
     }
 ]
 

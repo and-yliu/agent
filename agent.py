@@ -11,6 +11,7 @@ from skill import SkillRegistry
 from pathlib import Path
 from hooks import trigger_hooks
 from context import AgentContext
+from memory import tool_result_budget, snip_compact, micro_compact, compact_history, CONTEXT_LIMIT, reactive_compact
 
 load_dotenv()
 
@@ -69,6 +70,13 @@ def execute_tool_calls(response_content) -> list[dict]:
     for block in response_content:
         if block.type != "tool_use":
             continue
+
+        if block.name == "compact":
+            state.messages[:] = compact_history(state.messages, TRANSCRIPT_DIR)
+            results.append({"type": "tool_result", "tool_use_id": block.id,
+                            "content": "[Compacted. Conversation history has been summarized.]"})
+            state.messages.append({"role": "user", "content": results})
+            break 
 
         # Trigger PreToolUse hooks (handles permissions and logging)
         blocked_reason = trigger_hooks("PreToolUse", block)
@@ -160,6 +168,16 @@ def run_subagent(prompt: str) -> str:
 def agent_loop(state: LoopState) -> None:
     dump_debug(state)
     while True:
+        state.messages[:] = tool_result_budget(state.messages)
+        state.messages[:] = snip_compact(state.messages)
+        state.messages[:] = micro_compact(state.messages)
+
+        if estimate_size(state.messages) > CONTEXT_LIMIT:
+            print("[auto compact]")
+            state.messages[:] = compact_history(state.messages)
+
+        print(f"{AgentContext.get_prefix()}> Thinking")
+
         response = client.messages.create(
             model=MODEL,
             tools=TOOLS,
